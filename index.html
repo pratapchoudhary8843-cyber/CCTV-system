@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Smart CCTV</title>
+<link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;600;800&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+:root{--bg:#1c2327;--panel:#252f34;--line:#35434a;--text:#e8eeea;--mute:#93a4a8;--alarm:#ef5350;--amber:#f2a93b;--teal:#62b6a4;font-family:"Schibsted Grotesk",system-ui,sans-serif}
+@media (prefers-color-scheme:light){:root{--bg:#eef1ee;--panel:#fff;--line:#d3dbd6;--text:#1d272b;--mute:#5d6e72}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text)}
+main{max-width:1280px;margin:0 auto;padding:20px;display:grid;gap:16px;grid-template-columns:2fr 1fr}
+header{grid-column:1/-1;display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px}
+h1{margin:0;font-size:1.5rem;font-weight:800}h2{margin:0 0 10px;font-size:1rem;font-weight:600}
+section{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:14px}
+.feed{position:relative;background:#000;border-radius:4px;overflow:hidden;aspect-ratio:16/9}
+.feed img,.feed svg{position:absolute;inset:0;width:100%;height:100%}.feed img{object-fit:fill}
+.feed svg polygon{fill:rgba(242,169,59,.15);stroke:var(--amber);stroke-width:.004}
+.feed.edit{cursor:crosshair;outline:2px solid var(--amber)}
+#rec{position:absolute;top:10px;left:10px;background:var(--alarm);color:#fff;font-weight:600;padding:2px 10px;border-radius:3px;font-size:.85rem}
+.bar{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center}.bar span{color:var(--mute);font-size:.9rem;margin-left:auto}
+button{font:inherit;background:transparent;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:5px 12px;cursor:pointer}
+button:hover,button:focus-visible{border-color:var(--amber);outline:none}button.on{background:var(--amber);color:#1c2327;border-color:var(--amber)}
+.kpis{display:grid;grid-template-columns:1fr 1fr;gap:12px}.kpis b{font-size:2rem;display:block;line-height:1}.kpis small{color:var(--mute)}
+.kpis .bad b{color:var(--alarm)}
+ul{list-style:none;margin:0;padding:0}#live li{padding:4px 0;border-bottom:1px solid var(--line)}#live b{display:inline-block;min-width:2ch;color:var(--teal)}
+.wide{grid-column:1/-1}.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px}
+table{width:100%;border-collapse:collapse;font-size:.92rem}th{text-align:left;color:var(--mute);font-weight:400}
+td,th{padding:7px 8px;border-bottom:1px solid var(--line)}td img{width:96px;border-radius:3px;display:block}
+.t{padding:2px 8px;border-radius:3px;font-size:.82rem;font-weight:600;color:#1c2327}
+.t.intrusion{background:var(--alarm)}.t.object{background:var(--amber)}.t.person{background:var(--teal)}.t.crowd{background:#b48ad6}
+a{color:var(--teal)}#off{position:absolute;inset:0;display:grid;place-items:center;text-align:center;padding:20px;color:#93a4a8}
+#status{color:var(--mute);font-size:.9rem;margin-top:8px}
+.empty{color:var(--mute);padding:16px 0}
+@media(max-width:860px){main{grid-template-columns:1fr}}
+</style></head><body><main>
+<header><h1>Smart CCTV</h1><span id="clock"></span></header>
+<section class="wide" id="err" hidden style="border-color:var(--alarm)"></section>
+
+<section><h2>Live camera</h2>
+ <div class="feed" id="feed"><img src="/video" alt="Live camera feed"><svg viewBox="0 0 1 1" preserveAspectRatio="none"><polygon id="poly"/></svg><div id="off">Camera is off. Click “Use this computer’s camera” below.</div><div id="rec" hidden>Recording</div></div>
+ <div id="status">Starting…</div>
+ <div class="bar"><button id="cam" class="on">Use this computer’s camera</button><button id="edit">Edit restricted zone</button><button id="save" hidden>Save zone</button><button id="clear" hidden>Clear points</button>
+ <span id="hint">Anyone standing inside the amber zone triggers an intrusion alert. <b id="fps">0</b> fps</span></div>
+</section>
+
+<section><h2>Today</h2>
+ <div class="kpis"><div class="bad"><b id="k-int">0</b><small>Intrusions</small></div><div class="bad"><b id="k-crowd">0</b><small>Crowd alerts</small></div>
+ <div><b id="k-now">0</b><small>People in view now</small></div><div><b id="k-uniq">0</b><small>Different people today</small></div>
+ <div><b id="k-obj">0</b><small>Watched objects</small></div><div><b id="k-peak">–</b><small>Busiest hour</small></div></div>
+ <h2 style="margin-top:18px">In view now</h2><ul id="live"></ul>
+</section>
+
+<section class="wide"><div class="charts">
+ <div><h2>Events by hour (last 24 h)</h2><canvas id="c1" height="150"></canvas></div>
+ <div><h2>Average people in view, by hour</h2><canvas id="c2" height="150"></canvas></div>
+</div></section>
+
+<section class="wide"><h2>Recent events</h2><div id="events"></div></section>
+</main>
+<script>
+const $=s=>document.querySelector(s),j=u=>fetch(u).then(r=>r.json());
+let pts=[],editing=false,c1,c2;
+const hrs=[...Array(24).keys()].map(h=>String(h).padStart(2,'0'));
+const draw=()=>$('#poly').setAttribute('points',pts.map(p=>p.join(',')).join(' '));
+j('/api/zone').then(z=>{pts=z;draw()});
+$('#edit').onclick=()=>{editing=!editing;if(editing)pts=[];draw();$('#feed').classList.toggle('edit',editing);$('#edit').classList.toggle('on',editing);
+ $('#save').hidden=$('#clear').hidden=!editing;$('#hint').firstChild.textContent=editing?'Click the video to place corner points (3 or more). ':'Anyone standing inside the amber zone triggers an intrusion alert. '};
+$('#feed').onclick=e=>{if(!editing)return;const r=$('#feed').getBoundingClientRect();pts.push([+((e.clientX-r.left)/r.width).toFixed(3),+((e.clientY-r.top)/r.height).toFixed(3)]);draw()};
+$('#clear').onclick=()=>{pts=[];draw()};
+$('#save').onclick=async()=>{if(pts.length<3)return alert('Place at least 3 points.');
+ await fetch('/api/zone',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(pts)});$('#edit').click()};
+
+async function refreshLive(){const d=await j('/api/live');
+ $('#live').innerHTML=Object.entries(d.counts).map(([k,v])=>`<li><b>${v}</b> ${k}</li>`).join('')||'<li class="empty">Nothing in view</li>';
+ $('#rec').hidden=!d.recording;$('#off').hidden=d.has_video;$('#k-now').textContent=d.counts.person||0;$('#k-uniq').textContent=d.people_today||0;$('#status').textContent=d.status+(d.has_video?'':'');if(d.source==='server')$('#cam').hidden=true;const e=d.error||clientErr;$('#err').hidden=!e;if(e)$('#err').textContent=e;$('#fps').textContent=d.fps;$('#clock').textContent=new Date().toLocaleString()}
+async function refreshData(){
+ const [a,ev]=await Promise.all([j('/api/analytics'),j('/api/events')]);
+ $('#k-int').textContent=a.totals.intrusion||0;$('#k-crowd').textContent=a.totals.crowd||0;$('#k-obj').textContent=a.totals.object||0;
+ $('#k-peak').textContent=a.busiest==null?'–':hrs[a.busiest]+':00';
+ const ds=[['intrusion','#ef5350'],['crowd','#b48ad6'],['object','#f2a93b'],['person','#62b6a4']].map(([k,c])=>({label:k,data:a.by_type[k],backgroundColor:c}));
+ c1?.destroy();c1=new Chart($('#c1'),{type:'bar',data:{labels:hrs,datasets:ds},options:{scales:{x:{stacked:true},y:{stacked:true,beginAtZero:true,ticks:{precision:0}}}}});
+ c2?.destroy();c2=new Chart($('#c2'),{type:'line',data:{labels:hrs,datasets:[{label:'People',data:a.traffic,borderColor:'#62b6a4',tension:.3,fill:false}]},options:{scales:{y:{beginAtZero:true}}}});
+ $('#events').innerHTML=ev.length?`<table><tr><th>Snapshot</th><th>Type</th><th>Detected</th><th>Time</th><th>Clip</th></tr>`+ev.map(e=>
+ `<tr><td><img loading="lazy" src="${e.snapshot}" alt="${e.type} snapshot"></td><td><span class="t ${e.type}">${e.type}</span></td><td>${e.label}</td><td>${new Date(e.ts*1000).toLocaleString()}</td><td>${e.clip?`<a href="${e.clip}" target="_blank">Open clip</a>`:''}</td></tr>`).join('')+'</table>'
+ :'<div class="empty">No events yet. They appear here when someone enters the camera view.</div>'}
+
+const sleep=ms=>new Promise(r=>setTimeout(r,ms)),vid=document.createElement('video'),cv=document.createElement('canvas');
+vid.muted=true;vid.playsInline=true;let stream=null,sending=false;
+let clientErr='';
+function camErr(m){clientErr=m;$('#err').hidden=false;$('#err').textContent=m}
+async function startCam(){
+ if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia)return camErr('This page cannot use the camera. Open http://localhost:8000 (not an IP address) in Chrome or Edge.');
+ try{stream=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280},height:{ideal:720}},audio:false})}
+ catch(e){return camErr('The browser could not open the camera ('+e.name+'). Click the camera icon in the address bar and choose Allow, and close other apps using the camera (Zoom, Teams).')}
+ clientErr='';$('#err').hidden=true;vid.srcObject=stream;await vid.play();sending=true;$('#cam').textContent='Stop camera';send()}
+function stopCam(){sending=false;if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;$('#cam').textContent='Use this computer’s camera'}
+async function send(){
+ while(sending){const t=performance.now();
+  if(vid.videoWidth){const w=Math.min(vid.videoWidth,960),h=Math.round(w*vid.videoHeight/vid.videoWidth);cv.width=w;cv.height=h;cv.getContext('2d').drawImage(vid,0,0,w,h);
+   const blob=await new Promise(r=>cv.toBlob(r,'image/jpeg',.7));
+   try{const r=await fetch('/api/frame',{method:'POST',body:blob});if(r.status===503)await sleep(1000);else if(!r.ok){const j=await r.json().catch(()=>({}));camErr(j.error||('Server error '+r.status));await sleep(1500)}else if(clientErr)clientErr=''}catch(e){await sleep(1000)}}
+  const dt=performance.now()-t;if(dt<100)await sleep(100-dt)}}
+$('#cam').onclick=()=>sending?stopCam():startCam();
+if(navigator.permissions)navigator.permissions.query({name:'camera'}).then(p=>{if(p.state==='granted')setTimeout(()=>{if(!sending&&!$('#cam').hidden)startCam()},1500)}).catch(()=>{});
+refreshLive();refreshData();setInterval(refreshLive,1000);setInterval(refreshData,15000);
+</script></body></html>
